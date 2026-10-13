@@ -1,0 +1,21 @@
+{
+  "name": "pubky-encryption-demo",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build --base ./",
+    "test": "node --test test/*.test.js",
+    "preview": "vite preview --host 0.0.0.0",
+    "test:browser": "playwright test"
+  },
+  "dependencies": {
+    "@synonymdev/pubky": "0.16.1",
+    "qrcode": "1.5.4"
+  },
+  "devDependencies": {
+    "vite": "8.3.1",
+    "@playwright/test": "1.63.0"
+  }
+}
