@@ -120,3 +120,30 @@ test("stalled relay ends in a bounded, actionable failure", async ({
     "https://httprelay.staging.pubky.app",
   );
 });
+
+test("consent is chosen in the signer; keys-only is a separate request", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.locator("#qr")).toBeVisible();
+  await expect(page.getByRole("combobox")).toHaveCount(0);
+  await expect(page.locator("#hint")).toContainText(
+    "Choose encryption permissions in Passport or Ring",
+  );
+  const caps = async () =>
+    new URL(
+      await page.locator("#open-ring").getAttribute("href"),
+    ).searchParams.get("caps");
+  expect(await caps()).toBe("/pub/enc-demo/a/:rwe,/pub/enc-demo/b/:rwe");
+  await page
+    .getByRole("button", { name: "Test keys without storage", exact: true })
+    .click();
+  await expect.poll(caps).toBe("/pub/enc-demo/a/:e");
+  await page
+    .getByRole("button", {
+      name: "Back to encryption + storage test",
+      exact: true,
+    })
+    .click();
+  await expect.poll(caps).toBe("/pub/enc-demo/a/:rwe,/pub/enc-demo/b/:rwe");
+});

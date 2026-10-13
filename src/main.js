@@ -25,11 +25,7 @@ const $ = (id) => document.getElementById(id);
 $("app").innerHTML =
   `<header><div class="brand"><span class="mark">P</span> Pubky</div><span class="badge">SDK ${SDK_VERSION}</span></header><main>
 <h1>Encryption smoke test</h1><p class="intro">Open Passport or scan with Ring. The same request checks consent, encryption and storage.</p>
-<div class="layout"><section class="panel"><label for="case">TEST CASE</label><select id="case">${Object.entries(
-    CASES,
-  )
-    .map(([id, c]) => `<option value="${id}">${c.title}</option>`)
-    .join("")}</select><p class="hint" id="hint"></p>
+<div class="layout"><section class="panel"><button class="secondary" id="case" type="button" aria-pressed="false">Test keys without storage</button><p class="hint" id="hint"></p>
 <button class="primary" id="passport" disabled>Open in Passport</button><p class="muted center">or scan with Pubky Ring</p><div id="waiting"><canvas id="qr" hidden></canvas><p id="preparing" class="muted">Preparing request…</p><a id="open-ring" hidden>Open Ring on this device</a></div><button class="secondary" id="restart">New request</button><small class="small-note">Uses Passport on pp1. Temporary test files are deleted afterward.</small></section>
 <section class="panel"><h2>Result</h2><div class="status" id="status" role="status" aria-live="polite"><span class="dot"></span><span id="status-text">Preparing request…</span></div><div id="checks" aria-live="polite"></div><p class="muted" id="empty">Approve in either signer to run the checks.</p>
 <details id="evidence"><summary>Technical evidence</summary><div id="metadata" hidden><div class="metric"><span>Identity</span><span id="identity"></span></div><div class="subhead">Approved permissions</div><pre id="capabilities"></pre><div class="subhead">Key scopes</div><pre id="scopes"></pre></div><div id="encrypted" hidden><div class="subhead">Encrypted file</div><pre id="ciphertext"></pre></div><button id="download" class="secondary" disabled>Download report</button></details></section></div>
@@ -37,7 +33,8 @@ $("app").innerHTML =
 let active,
   latest,
   runPromise,
-  restarting = false;
+  restarting = false,
+  selectedMode = "normal";
 function status(text, kind = "running") {
   $("status-text").textContent = text;
   $("status").className = `status ${kind}`;
@@ -71,8 +68,8 @@ function errorDetail(error, run, guard) {
   const failure = guard?.failure;
   if (failure)
     return `${failure.phase === "discovery" ? "Homeserver discovery" : failure.phase === "homeserver" ? "Homeserver connection" : failure.phase === "relay" ? "Relay connection" : "Network request"} failed at ${failure.origin}${failure.status ? ` (HTTP ${failure.status})` : failure.kind === "timeout" ? " (15-second timeout)" : " (unreachable or blocked by CORS)"}.`;
-  if (error?.message === "Consent differs from selected case")
-    return "The approved permissions do not match the selected test case. Follow the checkbox instructions and try again.";
+  if (error?.message === "Invalid approved permissions or key bundle")
+    return "The signer returned unrequested permissions or keys that do not match the approved encryption scopes.";
   if (error?.message === "Missing signed bundle")
     return "The signer did not deliver a signed key bundle.";
   if (/resolve homeserver/i.test(error?.message || ""))
@@ -129,9 +126,17 @@ async function restart() {
   $("restart").disabled = false;
 }
 $("restart").onclick = restart;
-$("case").onchange = restart;
+$("case").onclick = () => {
+  selectedMode = selectedMode === "normal" ? "only" : "normal";
+  $("case").textContent =
+    selectedMode === "only"
+      ? "Back to encryption + storage test"
+      : "Test keys without storage";
+  $("case").setAttribute("aria-pressed", String(selectedMode === "only"));
+  restart();
+};
 async function executeRun() {
-  const mode = $("case").value;
+  const mode = selectedMode;
   $("hint").textContent = CASES[mode].hint;
   clearRequest();
   $("preparing").hidden = false;
@@ -332,24 +337,32 @@ async function executeRun() {
     const consent = inspectConsent(mode, capabilities, report.keyScopes);
     renderCheck(
       report,
-      "Approved capabilities match your case",
+      "Approved permissions stay within the request",
       consent.capabilities,
-      `Expected: ${CASES[mode].caps.join(", ")}`,
+      `Approved: ${capabilities.join(", ") || "none"}`,
     );
     renderCheck(
       report,
       "Only approved encryption scopes delivered",
       consent.scopes,
-      `Expected: ${CASES[mode].keys.join(", ") || "empty key bundle"}`,
+      `Expected from approved permissions: ${consent.expectedKeys.join(", ") || "empty key bundle"}`,
     );
     if (!consent.capabilities || !consent.scopes)
-      throw new Error("Consent differs from selected case");
+      throw new Error("Invalid approved permissions or key bundle");
+    renderCheck(
+      report,
+      "Encryption permissions received",
+      true,
+      consent.expectedKeys.length
+        ? `${consent.expectedKeys.length} key scope(s) approved. Checking encryption below.`
+        : "No encryption keys approved. This run checks storage and key exclusion; no encryption round trip.",
+    );
     const runId = crypto.randomUUID();
     const keyMap = new Map();
     for (const scope of [A, B]) {
       const path = `${scope}${runId}.json`;
       let key;
-      if (!CASES[mode].keys.includes(scope)) {
+      if (!consent.expectedKeys.includes(scope)) {
         const denied = await mustReject(() =>
           keys.deriveCryptoKeyForPath(path),
         );
@@ -419,7 +432,7 @@ async function executeRun() {
     for (const scope of mode === "only" ? [A] : [A, B]) {
       const path = `${scope}${runId}.json`;
       const key = keyMap.get(scope);
-      if (mode === "only") {
+      if (!(consent.permissions.get(scope) || "").includes("w")) {
         let denied = false,
           wrote = false;
         try {
@@ -446,9 +459,9 @@ async function executeRun() {
         }
         renderCheck(
           report,
-          "Encryption permission grants no storage write",
+          `No write permission · ${scope}`,
           denied,
-          "A real write must receive HTTP 403 with encryption-only permission.",
+          "A real write must receive HTTP 403 without approved write permission.",
         );
         continue;
       }
@@ -465,6 +478,15 @@ async function executeRun() {
         const hash = await digest(payload);
         await storage.putBytes(path, payload);
         wrote = true;
+        if (!(consent.permissions.get(scope) || "").includes("r")) {
+          renderCheck(
+            report,
+            `Storage write · ${scope}`,
+            true,
+            "Write succeeded; read was not approved.",
+          );
+          continue;
+        }
         const downloaded = await storage.getBytes(path);
         renderCheck(
           report,

@@ -2,33 +2,13 @@ export const SDK_VERSION = "0.16.1";
 export const A = "/pub/enc-demo/a/";
 export const B = "/pub/enc-demo/b/";
 export const CASES = {
-  all: {
-    title: "Approve both keys",
-    hint: "Keep encryption checked for both scopes.",
+  normal: {
     requested: `${A}:rwe,${B}:rwe`,
-    caps: [`${A}:rwe`, `${B}:rwe`],
-    keys: [A, B],
-  },
-  partial: {
-    title: "Decline one key",
-    hint: "Uncheck encryption for /pub/enc-demo/b/. Keep read and write for both scopes.",
-    requested: `${A}:rwe,${B}:rwe`,
-    caps: [`${A}:rwe`, `${B}:rw`],
-    keys: [A],
-  },
-  none: {
-    title: "Decline all keys",
-    hint: "Uncheck encryption for both scopes. Keep read and write.",
-    requested: `${A}:rwe,${B}:rwe`,
-    caps: [`${A}:rw`, `${B}:rw`],
-    keys: [],
+    hint: "Choose encryption permissions in Passport or Ring. We’ll verify the permissions and keys returned.",
   },
   only: {
-    title: "Keys without storage",
-    hint: "Approve the encryption-only scope. No read or write is requested.",
     requested: `${A}:e`,
-    caps: [`${A}:e`],
-    keys: [A],
+    hint: "Keys-only test: no storage access requested. Choose encryption permission in your signer.",
   },
 };
 export function equalSet(actual, expected) {
@@ -37,11 +17,42 @@ export function equalSet(actual, expected) {
   );
 }
 export function inspectConsent(mode, capabilities, scopes) {
-  const want = CASES[mode];
-  if (!want) throw new Error("Unknown test case");
+  if (!CASES[mode]) throw new Error("Unknown test case");
+  const allowed =
+    mode === "only"
+      ? new Map([[A, "e"]])
+      : new Map([
+          [A, "rwe"],
+          [B, "rwe"],
+        ]);
+  const permissions = new Map();
+  let valid = true;
+  for (const capability of capabilities) {
+    const match = /^([^:]+):([rwe]+)$/.exec(capability);
+    if (!match) {
+      valid = false;
+      continue;
+    }
+    const [, path, actions] = match;
+    if (
+      !allowed.has(path) ||
+      permissions.has(path) ||
+      new Set(actions).size !== actions.length ||
+      [...actions].some((action) => !allowed.get(path).includes(action))
+    ) {
+      valid = false;
+      continue;
+    }
+    permissions.set(path, actions);
+  }
+  const expectedKeys = [...permissions]
+    .filter(([, actions]) => actions.includes("e"))
+    .map(([path]) => path);
   return {
-    capabilities: equalSet(capabilities, want.caps),
-    scopes: equalSet(scopes, want.keys),
+    capabilities: valid,
+    scopes: equalSet(scopes, expectedKeys),
+    expectedKeys,
+    permissions,
   };
 }
 export const bytes = (text) => new TextEncoder().encode(text);

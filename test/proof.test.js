@@ -14,30 +14,32 @@ import {
   addCheck,
   finishReport,
 } from "../src/proof.js";
-for (const mode of Object.keys(CASES))
-  test(`${mode}: exact consent and key scopes required`, () => {
-    const want = CASES[mode];
-    assert.deepEqual(inspectConsent(mode, want.caps, want.keys), {
-      capabilities: true,
-      scopes: true,
-    });
-    assert.equal(
-      inspectConsent(mode, [...want.caps, "/:rw"], want.keys).capabilities,
-      false,
+test("either key, both keys, or neither can be approved in the signer", () => {
+  for (const keys of [[], [A], [B], [A, B]]) {
+    const caps = [A, B].map(
+      (scope) => `${scope}:rw${keys.includes(scope) ? "e" : ""}`,
     );
-    assert.equal(
-      inspectConsent(mode, want.caps, [...want.keys, "/"]).scopes,
-      false,
-    );
-  });
-test("declining encryption retains read/write and excludes only the selected key", () => {
-  assert.deepEqual(CASES.partial.caps, [`${A}:rwe`, `${B}:rw`]);
-  assert.deepEqual(CASES.partial.keys, [A]);
-  assert.deepEqual(CASES.none.keys, []);
-  assert.equal(
-    inspectConsent("partial", CASES.all.caps, CASES.all.keys).capabilities,
-    false,
-  );
+    const result = inspectConsent("normal", caps, keys);
+    assert.equal(result.capabilities, true);
+    assert.equal(result.scopes, true);
+    assert.deepEqual(result.expectedKeys, keys);
+    assert.equal(inspectConsent("normal", caps, [...keys, "/"]).scopes, false);
+  }
+});
+test("rejects unrequested permissions, malformed grants, and extra or missing keys", () => {
+  for (const caps of [
+    ["/:e"],
+    [`${A}:rwex`],
+    [`${A}:ee`],
+    [`${A}:e`, `${A}:rw`],
+  ])
+    assert.equal(inspectConsent("normal", caps, []).capabilities, false);
+  assert.equal(inspectConsent("normal", [`${A}:e`], []).scopes, false);
+  assert.equal(inspectConsent("normal", [`${A}:rw`], [A]).scopes, false);
+  assert.equal(inspectConsent("only", [`${A}:rw`], []).capabilities, false);
+  assert.equal(inspectConsent("only", [`${B}:e`], [B]).capabilities, false);
+  assert.equal(inspectConsent("only", [`${A}:e`], [A]).scopes, true);
+  assert.equal(inspectConsent("only", [], []).scopes, true);
 });
 test("crypto round trip rejects tampering, wrong key, and changed AAD", async () => {
   const key = await crypto.subtle.generateKey(
@@ -83,7 +85,7 @@ test("crypto round trip rejects tampering, wrong key, and changed AAD", async ()
   assert.equal(JSON.stringify(envelope).includes(text), false);
 });
 test("reports fail without evidence or after any failed check", () => {
-  const r = makeReport("passport", "none", "https://example.com");
+  const r = makeReport("passport", "normal", "https://example.com");
   assert.equal(finishReport(r).passed, false);
   addCheck(r, "session", true, "verified");
   addCheck(r, "key scope", false, "unexpected key");
