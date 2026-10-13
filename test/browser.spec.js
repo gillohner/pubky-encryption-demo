@@ -1,88 +1,100 @@
 import { test, expect } from "@playwright/test";
-import { readFile } from "node:fs/promises";
-
-test("Ring request uses signed HPKE; cancellation exports a failed report without secrets", async ({
-  page,
-}) => {
-  await page.route("https://httprelay.staging.pubky.app/**", (route) =>
+const passport = "https://3000--main--pp1--gil.coder.riginode.xyz";
+test.beforeEach(async ({ context }) => {
+  await context.route("https://httprelay.staging.pubky.app/**", (route) =>
     route.fulfill({
       status: 204,
       headers: { "access-control-allow-origin": "*" },
     }),
   );
-  await page.goto("/");
-  await page.getByRole("button", { name: "Pubky Ring", exact: true }).click();
-  await page.locator("#case").selectOption("partial");
-  await page
-    .getByRole("button", { name: "Start with Ring", exact: true })
-    .click();
-  const link = page.locator("#open-ring");
-  await expect(link).toBeVisible();
-  const raw = await link.getAttribute("href"),
-    url = new URL(raw);
-  expect(url.protocol).toBe("pubkyauth:");
-  expect(url.searchParams.get("af")).toBe("v1");
-  expect(url.searchParams.get("epk")).toBeTruthy();
-  expect(url.searchParams.has("secret")).toBe(false);
-  expect(url.searchParams.get("caps")).toBe(
-    "/pub/enc-demo/a/:rwe,/pub/enc-demo/b/:rwe",
+  await context.route(`${passport}/**`, (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><title>Passport fixture</title>",
+    }),
   );
-  await page.getByRole("button", { name: "Cancel pending request" }).click();
-  await expect(page.locator("#status")).toHaveClass("status fail");
-  const download = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Download evidence JSON" }).click();
-  const file = await download;
-  const data = await readFile(await file.path(), "utf8");
-  const report = JSON.parse(data);
-  expect(report.passed).toBe(false);
-  expect(report.complete).toBe(true);
-  expect(data).not.toContain(raw);
-  expect(data).not.toContain(url.searchParams.get("epk"));
-  expect(data).not.toContain("Hello from Pubky");
-  await expect(page.locator("#open-ring")).not.toHaveAttribute("href");
 });
-
-test("Passport opens pp1 with the SDK request in its fragment", async ({
+test("automatic Ring QR and Passport share an HPKE request with return callbacks", async ({
   page,
-  context,
 }) => {
-  await context.route(
-    "https://3000--main--pp1--gil.coder.riginode.xyz/**",
-    (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "text/html",
-        body: "<!doctype html><title>Test destination</title>",
-      }),
-  );
-  await page.route("https://httprelay.staging.pubky.app/**", (route) =>
-    route.fulfill({
-      status: 204,
-      headers: { "access-control-allow-origin": "*" },
-    }),
-  );
   await page.goto("/");
-  const pending = page.waitForEvent("popup");
-  await page
-    .getByRole("button", { name: "Start with Passport", exact: true })
-    .click();
-  const popup = await pending;
-  await popup.waitForURL(
-    "https://3000--main--pp1--gil.coder.riginode.xyz/authorize#**",
-  );
-  const url = new URL(popup.url());
-  const auth = new URL(decodeURIComponent(url.hash.slice(3)));
+  await expect(page.locator("#qr")).toBeVisible();
+  const raw = await page.locator("#open-ring").getAttribute("href");
+  const auth = new URL(raw);
   expect(auth.searchParams.get("af")).toBe("v1");
-  expect(url.search).toBe("");
-  await popup.close();
-  await expect(page.locator("#status")).toHaveClass("status fail");
+  expect(auth.searchParams.get("epk")).toBeTruthy();
+  expect(auth.searchParams.has("secret")).toBe(false);
+  for (const outcome of ["success", "cancel", "error"]) {
+    const callback = new URL(auth.searchParams.get(`x-${outcome}`));
+    expect(callback.pathname).toBe("/callback.html");
+    expect(callback.searchParams.get("outcome")).toBe(outcome);
+    expect(callback.searchParams.get("run")).toBeTruthy();
+  }
+  const pending = page.waitForEvent("popup");
+  await page.getByRole("button", { name: "Open in Passport" }).click();
+  const popup = await pending;
+  await popup.waitForURL(`${passport}/authorize#**`);
+  expect(decodeURIComponent(new URL(popup.url()).hash.slice(3))).toBe(raw);
+  await popup.evaluate(() => {
+    window.addEventListener("message", (e) => {
+      if (e.data.type === "pubky-passport.authorization-outcome-ack")
+        window.close();
+    });
+    window.opener.postMessage(
+      {
+        type: "pubky-passport.authorization-outcome",
+        version: 1,
+        messageId: "test-id",
+        outcome: "success",
+      },
+      "http://localhost:4173",
+    );
+  });
+  await expect(page.locator("#status")).toContainText("Approved in Passport");
+  await expect.poll(() => popup.isClosed()).toBe(true);
+  await expect(page.locator("#checks")).toBeEmpty(); // Callback is not proof of successful auth.
 });
-
-test("mobile layout has no overflow and does not prefill a passing result", async ({
+test("callback fallback cancels and creates a failed report without auth secrets", async ({
   page,
 }) => {
+  await page.goto("/");
+  await expect(page.locator("#qr")).toBeVisible();
+  const raw = await page.locator("#open-ring").getAttribute("href");
+  const auth = new URL(raw);
+  const pending = page.waitForEvent("popup");
+  await page.locator("#passport").click();
+  const popup = await pending;
+  await popup.waitForURL(`${passport}/authorize#**`);
+  await popup
+    .evaluate((url) => location.replace(url), auth.searchParams.get("x-cancel"))
+    .catch((error) => {
+      if (!popup.isClosed()) throw error;
+    });
+  await expect(page.locator("#status")).toHaveClass("status fail");
+  await expect(page.locator("#checks")).toContainText(
+    "Authorization cancelled",
+  );
+  await page.locator("#evidence").evaluate((e) => (e.open = true));
+  const downloaded = page.waitForEvent("download");
+  await page.locator("#download").click();
+  const { readFile } = await import("node:fs/promises");
+  const data = await readFile(await (await downloaded).path(), "utf8");
+  expect(JSON.parse(data).passed).toBe(false);
+  expect(data).not.toContain(raw);
+  expect(data).not.toContain(auth.searchParams.get("epk"));
+});
+test("new request cancels stalled relay fetch and mobile screen stays compact", async ({
+  page,
+}) => {
+  await page.route("https://httprelay.staging.pubky.app/**", () => {});
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
+  await expect(page.locator("#qr")).toBeVisible();
+  const old = await page.locator("#open-ring").getAttribute("href");
+  await page.waitForTimeout(300);
+  await page.locator("#restart").click();
+  await expect(page.locator("#open-ring")).not.toHaveAttribute("href", old);
+  await expect(page.locator("#qr")).toBeVisible();
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
@@ -90,8 +102,21 @@ test("mobile layout has no overflow and does not prefill a passing result", asyn
   ).toBe(true);
   await expect(page.locator("#checks")).toBeEmpty();
   await expect(page.locator("#download")).toBeDisabled();
-  await page.locator("#case").selectOption("none");
-  await expect(page.locator("#hint")).toContainText(
-    "Uncheck encryption for both",
+  await page.screenshot({
+    path: "/tmp/pubky-encryption-simple-mobile.png",
+    fullPage: true,
+  });
+});
+test("stalled relay ends in a bounded, actionable failure", async ({
+  page,
+}) => {
+  await page.route("https://httprelay.staging.pubky.app/**", () => {});
+  await page.goto("/");
+  await expect(page.locator("#status")).toHaveClass("status fail", {
+    timeout: 22000,
+  });
+  await expect(page.locator("#checks")).toContainText("15-second timeout");
+  await expect(page.locator("#checks")).toContainText(
+    "https://httprelay.staging.pubky.app",
   );
 });

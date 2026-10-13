@@ -361,3 +361,76 @@ summary {
     font-size: 14px;
   }
 }
+
+/* Compact internal smoke-test layout. */
+main {
+  padding-top: 28px;
+}
+h1 {
+  font-size: 32px;
+  letter-spacing: -1px;
+  margin: 0 0 10px;
+}
+.intro {
+  font-size: 14px;
+  margin: 0 0 25px;
+}
+.layout {
+  grid-template-columns: 320px 1fr;
+}
+.panel {
+  padding: 20px;
+}
+.panel label:first-child {
+  margin-top: 0;
+}
+.primary {
+  margin-top: 12px;
+}
+.center {
+  text-align: center;
+  margin: 18px 0 5px;
+}
+#waiting {
+  padding: 8px 0;
+}
+#open-ring {
+  font-size: 12px;
+  margin: 10px 0;
+}
+#restart {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+}
+.small-note {
+  display: block;
+  margin-top: 14px;
+  font-size: 11px;
+}
+footer {
+  margin-top: 24px;
+}
+h2 {
+  margin-bottom: 16px !important;
+}
+#evidence {
+  margin-top: 20px;
+}
+#download {
+  margin-top: 15px;
+}
+.check {
+  font-size: 13px;
+}
+.check small {
+  font-size: 11px;
+}
+@media (max-width: 850px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+  h1 {
+    font-size: 28px;
+  }
+}

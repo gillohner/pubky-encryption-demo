@@ -7,7 +7,6 @@ import {
   SDK_VERSION,
   inspectConsent,
   bytes,
-  hex,
   digest,
   seal,
   open,
@@ -18,41 +17,27 @@ import {
   unb64,
   b64,
 } from "./proof.js";
+import { installNetworkGuard } from "./network.js";
 import "./style.css";
-const DEFAULT_PASSPORT = "https://3000--main--pp1--gil.coder.riginode.xyz";
-const DEFAULT_RELAY = "https://httprelay.staging.pubky.app/inbox";
+const PASSPORT = "https://3000--main--pp1--gil.coder.riginode.xyz";
+const RELAY = "https://httprelay.staging.pubky.app/inbox";
 const $ = (id) => document.getElementById(id);
 $("app").innerHTML =
-  `<header><div class="brand"><span class="mark">P</span> Pubky <span class="tag">Lab</span></div><span class="badge">Internal smoke test · SDK ${SDK_VERSION}</span></header>
-<main><div class="eyebrow">Scoped encryption / end-to-end verification</div><h1>See encryption<br><span>happen.</span></h1><p class="intro">Approve with Ring or Passport. Verify the exact permissions and keys delivered, encrypt a message, and check what reaches the homeserver.</p>
-<div class="layout"><section class="panel"><h2><span class="step">01</span> Set up a test</h2><span class="label">SIGNING APP</span><div class="seg"><button id="passport" class="selected" aria-pressed="true">Passport · pp1</button><button id="ring" aria-pressed="false">Pubky Ring</button></div>
-<label for="case">CONSENT CASE</label><select id="case">${Object.entries(CASES)
+  `<header><div class="brand"><span class="mark">P</span> Pubky</div><span class="badge">SDK ${SDK_VERSION}</span></header><main>
+<h1>Encryption smoke test</h1><p class="intro">Open Passport or scan with Ring. The same request checks consent, encryption and storage.</p>
+<div class="layout"><section class="panel"><label for="case">TEST CASE</label><select id="case">${Object.entries(
+    CASES,
+  )
     .map(([id, c]) => `<option value="${id}">${c.title}</option>`)
-    .join("")}</select><div class="hint" id="hint"></div>
-<label for="message">MESSAGE TO ENCRYPT</label><textarea id="message" maxlength="2000">Hello from Pubky. Only the approved app can decrypt this.</textarea><small>This text stays in your browser. Storage tests upload ciphertext or random probe bytes to unique demo paths, then delete them.</small>
-<details><summary>Connection settings</summary><label for="passport-origin">Passport origin</label><input id="passport-origin" type="url" value="${DEFAULT_PASSPORT}"><label for="relay">Relay</label><input id="relay" type="url" value="${DEFAULT_RELAY}"></details>
-<button class="primary" id="start">Start with Passport</button><div class="actions"><button class="secondary" id="cancel" hidden>Cancel pending request</button></div><div id="waiting" hidden><canvas id="qr"></canvas><br><a id="open-ring">Open Pubky Ring</a><p class="muted">Scan with Ring, or open Ring on this device. Keep this page open and return here after approval.</p></div><pre id="request"></pre></section>
-<section class="panel"><h2><span class="step">02</span> Read the proof</h2><div class="status" id="status" role="status" aria-live="polite"><span class="dot"></span><span id="status-text">Ready for a real authorization</span></div><div id="checks" aria-live="polite"></div><div id="empty" class="empty">Each run verifies:<ol><li>A signed, HPKE-protected approval and a real homeserver session.</li><li>The approved capabilities and exact key scopes.</li><li>AES-GCM round trips, tamper rejection, and path-bound keys.</li><li>Storage writes, reads and cleanup using the approved grant.</li></ol>No green result is prefilled.</div><div id="metadata" hidden><div class="subhead">Session evidence</div><div class="metric"><span>Identity</span><span id="identity"></span></div><div class="subhead">Approved capabilities</div><pre id="capabilities"></pre><div class="subhead">Delivered key scopes</div><pre id="scopes"></pre></div><div id="encrypted" hidden><div class="subhead">Ciphertext on the homeserver</div><pre id="ciphertext"></pre><small>Only this encrypted envelope is uploaded. Keys and plaintext are excluded.</small></div><div class="actions"><button id="download" class="secondary" disabled>Download evidence JSON</button></div></section></div>
-<footer><span>Keys are permanent; revoking storage access cannot take them back.<br>Sessions and delivered keys are held in memory. Reports contain no secrets.</span><span><a href="https://github.com/gillohner/pubky-encryption-demo">Source & test instructions ↗</a><br>Passport <a href="https://github.com/pubky/pubky-passport/pull/258">#258</a> · SDK <a href="https://github.com/pubky/pubky-homeserver/releases/tag/v0.16.1">0.16.1</a></span></footer></main>`;
-let method = "passport",
-  active,
-  latest;
-function setup() {
-  $("hint").textContent = CASES[$("case").value].hint;
-  $("request").textContent = CASES[$("case").value].requested;
-}
-setup();
-$("case").onchange = setup;
-for (const name of ["passport", "ring"])
-  $(name).onclick = () => {
-    method = name;
-    for (const n of ["passport", "ring"]) {
-      $(n).classList.toggle("selected", n === name);
-      $(n).setAttribute("aria-pressed", String(n === name));
-    }
-    $("start").textContent =
-      name === "passport" ? "Start with Passport" : "Start with Ring";
-  };
+    .join("")}</select><p class="hint" id="hint"></p>
+<button class="primary" id="passport" disabled>Open in Passport</button><p class="muted center">or scan with Pubky Ring</p><div id="waiting"><canvas id="qr" hidden></canvas><p id="preparing" class="muted">Preparing request…</p><a id="open-ring" hidden>Open Ring on this device</a></div><button class="secondary" id="restart">New request</button><small class="small-note">Uses Passport on pp1. Temporary test files are deleted afterward.</small></section>
+<section class="panel"><h2>Result</h2><div class="status" id="status" role="status" aria-live="polite"><span class="dot"></span><span id="status-text">Preparing request…</span></div><div id="checks" aria-live="polite"></div><p class="muted" id="empty">Approve in either signer to run the checks.</p>
+<details id="evidence"><summary>Technical evidence</summary><div id="metadata" hidden><div class="metric"><span>Identity</span><span id="identity"></span></div><div class="subhead">Approved permissions</div><pre id="capabilities"></pre><div class="subhead">Key scopes</div><pre id="scopes"></pre></div><div id="encrypted" hidden><div class="subhead">Encrypted file</div><pre id="ciphertext"></pre></div><button id="download" class="secondary" disabled>Download report</button></details></section></div>
+<footer><span>Grant revocation does not revoke delivered keys.</span><a href="https://github.com/gillohner/pubky-encryption-demo">Source & instructions ↗</a></footer></main>`;
+let active,
+  latest,
+  runPromise,
+  restarting = false;
 function status(text, kind = "running") {
   $("status-text").textContent = text;
   $("status").className = `status ${kind}`;
@@ -72,163 +57,243 @@ function renderCheck(report, id, passed, detail) {
   row.append(icon, body);
   $("checks").append(row);
 }
-function safeError(error) {
-  const name = typeof error?.name === "string" ? error.name : "Error";
-  const code = error?.data?.statusCode;
-  return `${name}${Number.isInteger(code) ? ` (HTTP ${code})` : ""}`;
+function clearRequest() {
+  $("passport").disabled = true;
+  $("open-ring").hidden = true;
+  $("open-ring").removeAttribute("href");
+  $("qr").hidden = true;
+  $("qr").getContext("2d")?.clearRect(0, 0, $("qr").width, $("qr").height);
 }
-function origin(value) {
-  const u = new URL(value);
-  if (
-    u.protocol !== "https:" &&
-    !(u.protocol === "http:" && ["localhost", "127.0.0.1"].includes(u.hostname))
-  )
-    throw new Error("Use HTTPS for remote services");
-  if (u.username || u.password || u.search || u.hash)
-    throw new Error(
-      "Use a plain service URL without credentials or parameters",
-    );
-  return u;
+function errorDetail(error, run, guard) {
+  if (run.expired)
+    return "Request expired. Create a new request and approve it again.";
+  if (run.cancelled) return "Authorization cancelled.";
+  const failure = guard?.failure;
+  if (failure)
+    return `${failure.phase === "discovery" ? "Homeserver discovery" : failure.phase === "homeserver" ? "Homeserver connection" : failure.phase === "relay" ? "Relay connection" : "Network request"} failed at ${failure.origin}${failure.status ? ` (HTTP ${failure.status})` : failure.kind === "timeout" ? " (15-second timeout)" : " (unreachable or blocked by CORS)"}.`;
+  if (error?.message === "Consent differs from selected case")
+    return "The approved permissions do not match the selected test case. Follow the checkbox instructions and try again.";
+  if (error?.message === "Missing signed bundle")
+    return "The signer did not deliver a signed key bundle.";
+  if (/resolve homeserver/i.test(error?.message || ""))
+    return "The approval was received, but the identity's homeserver could not be found.";
+  return `${error?.name || "Error"}${Number.isInteger(error?.data?.statusCode) ? ` (HTTP ${error.data.statusCode})` : ""} during ${run.phase}. Download the report for network-stage details.`;
 }
-function controls(busy) {
-  for (const id of [
-    "start",
-    "case",
-    "passport",
-    "ring",
-    "message",
-    "passport-origin",
-    "relay",
-  ])
-    $(id).disabled = busy;
-  $("cancel").hidden = !busy;
-}
-$("cancel").onclick = () => {
-  if (active) {
-    active.cancelled = true;
-    active.popup?.close();
-    status("Cancelling the pending request…");
+$("passport").onclick = () => {
+  if (!active?.authUrl) return;
+  if (active.popup && !active.popup.closed) {
+    active.popup.focus();
+    return;
   }
+  const popup = window.open(
+    "about:blank",
+    `pubky-proof-${active.id}`,
+    "popup,width=390,height=800",
+  );
+  if (!popup) {
+    status("Allow popups, or scan the QR with Ring.", "fail");
+    return;
+  }
+  active.popup = popup;
+  active.report.selectedSigner = "passport";
+  popup.location.replace(
+    `${PASSPORT}/authorize#d=${encodeURIComponent(active.authUrl)}`,
+  );
+};
+$("open-ring").onclick = () => {
+  if (active) active.report.selectedSigner = "ring";
 };
 $("download").onclick = () => {
   if (!latest) return;
   const a = document.createElement("a");
-  const u = URL.createObjectURL(
+  const url = URL.createObjectURL(
     new Blob([JSON.stringify(latest, null, 2)], { type: "application/json" }),
   );
-  a.href = u;
-  a.download = `pubky-encryption-${latest.selectedSigner}-${latest.case}-${Date.now()}.json`;
+  a.href = url;
+  a.download = `pubky-encryption-${latest.case}-${Date.now()}.json`;
   a.click();
-  setTimeout(() => URL.revokeObjectURL(u), 1000);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
-$("start").onclick = async () => {
-  if (active) return;
-  let passport, relay;
-  try {
-    passport = origin($("passport-origin").value).origin;
-    relay = origin($("relay").value).href;
-  } catch {
-    status("Enter a valid HTTPS Passport origin and relay URL.", "fail");
-    return;
+async function restart() {
+  if (restarting) return;
+  restarting = true;
+  $("restart").disabled = true;
+  if (active) {
+    active.cancelled = true;
+    active.abort.abort(new DOMException("Cancelled", "AbortError"));
+    active.popup?.close();
+    await runPromise;
   }
-  const run = {
-    cancelled: false,
-    popup:
-      method === "passport"
-        ? window.open(
-            "about:blank",
-            `pubky-proof-${crypto.randomUUID()}`,
-            "popup,width=390,height=800",
-          )
-        : undefined,
-  };
-  if (method === "passport" && !run.popup) {
-    status("Popup blocked. Allow popups and try again.", "fail");
-    return;
-  }
-  active = run;
-  latest = makeReport(method, $("case").value, passport);
-  const report = latest;
-  const mode = report.case;
-  const plaintext = $("message").value || "Pubky encryption test";
-  controls(true);
-  $("download").disabled = true;
+  runPromise = executeRun();
+  restarting = false;
+  $("restart").disabled = false;
+}
+$("restart").onclick = restart;
+$("case").onchange = restart;
+async function executeRun() {
+  const mode = $("case").value;
+  $("hint").textContent = CASES[mode].hint;
+  clearRequest();
+  $("preparing").hidden = false;
+  $("preparing").textContent = "Preparing request…";
   $("checks").replaceChildren();
-  $("empty").hidden = true;
+  $("empty").hidden = false;
   $("metadata").hidden = true;
   $("encrypted").hidden = true;
-  const sdk = new Pubky();
-  let flow, session, keys, grant, storage;
-  let signingDone = false;
+  $("download").disabled = true;
+  $("case").disabled = false;
+  const report = makeReport("ring-or-passport", mode, PASSPORT);
+  report.passportOrigin = PASSPORT;
+  latest = report;
+  const run = {
+    id: crypto.randomUUID(),
+    cancelled: false,
+    expired: false,
+    abort: new AbortController(),
+    phase: "request preparation",
+    report,
+  };
+  active = run;
+  const plaintext =
+    "Pubky encryption smoke test. This message must stay in the browser.";
+  let sdk,
+    flow,
+    session,
+    keys,
+    grant,
+    storage,
+    guard,
+    signingDone = false;
   const onMessage = (e) => {
+    if (e.source !== run.popup) return;
+    let outcome;
     if (
-      e.origin !== passport ||
-      e.source !== run.popup ||
-      e.data?.type !== "pubky-passport.authorization-outcome" ||
-      e.data.version !== 1 ||
-      typeof e.data.messageId !== "string"
-    )
-      return;
-    run.popup.postMessage(
-      {
-        type: "pubky-passport.authorization-outcome-ack",
-        version: 1,
-        messageId: e.data.messageId,
-      },
-      passport,
-    );
-    if (e.data.outcome === "success") signingDone = true;
-    else run.cancelled = true;
+      e.origin === PASSPORT &&
+      e.data?.type === "pubky-passport.authorization-outcome" &&
+      e.data.version === 1 &&
+      typeof e.data.messageId === "string"
+    ) {
+      outcome = e.data.outcome;
+      run.popup.postMessage(
+        {
+          type: "pubky-passport.authorization-outcome-ack",
+          version: 1,
+          messageId: e.data.messageId,
+        },
+        PASSPORT,
+      );
+    } else if (
+      e.origin === location.origin &&
+      e.data?.type === "pubky-encryption-return" &&
+      e.data.runId === run.id
+    ) {
+      outcome = e.data.outcome;
+      run.popup.postMessage(
+        { type: "pubky-encryption-return-ack", runId: run.id },
+        location.origin,
+      );
+    } else return;
+    if (outcome === "success") {
+      signingDone = true;
+      run.phase = "homeserver connection";
+      status("Approved in Passport. Receiving the session…");
+    } else if (["cancel", "error"].includes(outcome)) {
+      run.cancelled = true;
+      run.abort.abort(new DOMException("Cancelled", "AbortError"));
+    }
   };
   window.addEventListener("message", onMessage);
+  const deadline = setTimeout(() => {
+    run.expired = true;
+    run.abort.abort(new DOMException("Request expired", "TimeoutError"));
+    status("Request expired. Create a new request.", "fail");
+  }, 180000);
   try {
-    status("Creating a signed-approval request…");
+    status("Preparing request…");
+    guard = installNetworkGuard({
+      signal: run.abort.signal,
+      relayOrigin: new URL(RELAY).origin,
+      onEvent: (event) => {
+        if (session || run.cancelled || run.expired) return;
+        if (
+          event.phase === "relay" &&
+          event.status === 200 &&
+          event.method === "GET"
+        ) {
+          run.phase = "approval verification";
+          status("Approval received. Verifying it…");
+        } else if (event.phase === "discovery") {
+          run.phase = "homeserver discovery";
+          status("Approval received. Finding the homeserver…");
+        } else if (event.phase === "homeserver") {
+          run.phase = "homeserver connection";
+          status("Approval verified. Connecting to the homeserver…");
+        }
+      },
+    });
+    sdk = new Pubky();
+    const callback = (outcome) => {
+      const u = new URL("callback.html", location.href);
+      u.search = "";
+      u.hash = "";
+      u.searchParams.set("outcome", outcome);
+      u.searchParams.set("run", run.id);
+      return u.href;
+    };
     flow = await sdk.startGrantAuthFlow(
       CASES[mode].requested,
       AuthFlowKind.signin(),
       {
         clientId: "gillohner.github.io",
-        relay,
+        relay: RELAY,
         approvalFormat: "signedApprovalV1",
-        xCallback: { xSource: "Pubky encryption smoke test" },
+        xCallback: {
+          xSource: "Pubky encryption smoke test",
+          xSuccess: callback("success"),
+          xCancel: callback("cancel"),
+          xError: callback("error"),
+        },
       },
     );
-    if (run.cancelled) throw new Error("Cancelled");
-    const authUrl = flow.authorizationUrl;
-    const transport = new URL(authUrl);
+    if (run.abort.signal.aborted) throw run.abort.signal.reason;
+    run.authUrl = flow.authorizationUrl;
+    const transport = new URL(run.authUrl);
     if (
       transport.searchParams.get("af") !== "v1" ||
       !transport.searchParams.get("epk") ||
       transport.searchParams.has("secret")
     )
       throw new Error("Unexpected authorization transport");
-    if (method === "passport")
-      run.popup.location.replace(
-        `${passport}/authorize#d=${encodeURIComponent(authUrl)}`,
-      );
-    else {
-      $("waiting").hidden = false;
-      $("open-ring").href = authUrl;
-      await QRCode.toCanvas($("qr"), authUrl, {
-        width: 288,
-        margin: 1,
-        errorCorrectionLevel: "M",
-      });
-    }
-    status("Waiting for approval — follow the consent instructions.");
-    const deadline = Date.now() + 180000;
-    while (!session && Date.now() < deadline) {
-      if (run.cancelled) throw new Error("Cancelled");
-      if (run.popup?.closed && !signingDone)
-        throw new Error("Popup closed before approval");
+    await QRCode.toCanvas($("qr"), run.authUrl, {
+      width: 230,
+      margin: 1,
+      errorCorrectionLevel: "M",
+    });
+    $("qr").hidden = false;
+    $("preparing").hidden = true;
+    $("open-ring").href = run.authUrl;
+    $("open-ring").hidden = false;
+    $("passport").disabled = false;
+    run.phase = "approval";
+    status("Open Passport or scan with Ring to approve.");
+    while (!session) {
+      if (run.abort.signal.aborted) throw run.abort.signal.reason;
+      if (run.popup?.closed && !signingDone) {
+        run.popup = undefined;
+        status("Passport closed. Reopen it or scan with Ring.");
+      }
       session = await flow.tryPollOnce();
+      if (!session && guard.failure) throw new Error("Network request failed");
       if (!session) await new Promise((r) => setTimeout(r, 650));
     }
-    if (!session) throw new Error("Approval timed out");
-    if (run.cancelled) throw new Error("Cancelled");
-    $("cancel").hidden = true;
-    $("waiting").hidden = true;
-    status("Session received. Verifying consent and encryption…");
+    if (run.abort.signal.aborted) throw run.abort.signal.reason;
+    clearTimeout(deadline);
+    clearRequest();
+    $("case").disabled = true;
+    $("restart").disabled = true;
+    $("empty").hidden = true;
+    run.phase = "encryption and storage checks";
+    status("Session received. Running encryption checks…");
     renderCheck(
       report,
       "Signed approval → homeserver session",
@@ -448,27 +513,11 @@ $("start").onclick = async () => {
       }
     }
   } catch (error) {
-    const reason = run.cancelled
-      ? "Request cancelled"
-      : error instanceof Error &&
-          [
-            "Approval timed out",
-            "Popup closed before approval",
-            "Consent differs from selected case",
-            "Missing signed bundle",
-          ].includes(error.message)
-        ? error.message
-        : safeError(error);
-    renderCheck(
-      report,
-      "Run completed",
-      false,
-      `${reason}. Check signer approval, homeserver version and relay connectivity; no fallback is used.`,
-    );
+    renderCheck(report, "Run failed", false, errorDetail(error, run, guard));
+    report.failurePhase = run.phase;
   } finally {
-    $("waiting").hidden = true;
-    $("open-ring").removeAttribute("href");
-    $("qr").getContext("2d")?.clearRect(0, 0, $("qr").width, $("qr").height);
+    clearTimeout(deadline);
+    clearRequest();
     window.removeEventListener("message", onMessage);
     keys?.free();
     grant?.free();
@@ -480,7 +529,7 @@ $("start").onclick = async () => {
           report,
           "Test grant revoked",
           true,
-          "The session is signed out. Previously delivered keys remain mathematically valid.",
+          "Session signed out. Previously delivered keys remain valid.",
         );
       } catch {
         renderCheck(
@@ -493,17 +542,22 @@ $("start").onclick = async () => {
       session.free();
     }
     flow?.free();
-    sdk.free();
+    sdk?.free();
+    report.network = guard?.events.map((e) => ({ ...e }));
+    guard?.dispose();
     run.popup?.close();
-    active = undefined;
-    controls(false);
+    if (active === run) active = undefined;
     finishReport(report);
     status(
-      report.passed
-        ? "PASS — all checks verified on this run"
-        : "FAIL — inspect the evidence below",
+      report.passed ? "PASS — checks completed" : "FAIL — see the result below",
       report.passed ? "pass" : "fail",
     );
+    $("empty").hidden = true;
+    $("preparing").hidden = false;
+    $("preparing").textContent = "Create a new request to run again.";
     $("download").disabled = false;
+    $("case").disabled = false;
+    $("restart").disabled = false;
   }
-};
+}
+restart();
